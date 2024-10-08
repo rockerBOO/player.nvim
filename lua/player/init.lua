@@ -16,6 +16,7 @@ local default_config = {
       "mpv",
    },
 }
+local is_listening_now_playing = false
 local config = default_config
 local M = {}
 
@@ -154,6 +155,76 @@ M.select = function(select_opts)
    vim.ui.select(playback_commands, opts, function(item)
       M.run_command(item)
    end)
+end
+
+--- Show currently playing
+---@return table A table with artist, album and title
+M.now_playing = function()
+   local obj = vim.system(
+      { "playerctl", "metadata", "--format", "{{ artist }}\n{{ album }}\n{{ title }}" },
+      { text = true }
+   )
+      :wait()
+
+   if obj.code == 0 then
+      local parts = vim.split(obj.stdout, "\n")
+      if parts[1] == "" and parts[2] == "" then
+         notify(parts[3])
+      else
+         notify(parts[1] .. " - " .. parts[3])
+      end
+
+      return parts
+   else
+      notify("Player error: " % obj.stderr, vim.log.levels.WARN)
+   end
+
+   return {}
+end
+
+--- Show currently playing
+---@return userdata|nil, number|nil Return the process handle, pid
+M.listen_now_playing = function()
+   if is_listening_now_playing then
+      notify("Already listening to now playing", vim.log.levels.WARN)
+      return nil, nil
+   end
+
+   is_listening_now_playing = true
+   local stdout = vim.uv.new_pipe()
+   local stderr = vim.uv.new_pipe()
+   local process, pid = vim.uv.spawn("playerctl", {
+      args = { "metadata", "--format", "{{ artist }}\n{{ album }}\n{{ title }}", "--follow" },
+      stdio = { nil, stdout, stderr },
+   }, function(code, signal)
+      -- Close the pipes
+      vim.uv.read_stop(stdout)
+      vim.uv.read_stop(stderr)
+      vim.uv.close(stdout)
+      vim.uv.close(stderr)
+      is_listening_now_playing = false
+   end)
+
+   vim.uv.read_start(stderr, function(err, data)
+      assert(not err, err)
+      if data ~= nil then
+         notify("Player error: " .. data, vim.log.levels.ERROR)
+      end
+   end)
+
+   vim.uv.read_start(stdout, function(err, data)
+      assert(not err, err)
+      if data ~= nil then
+         local parts = vim.split(data, "\n")
+         if parts[1] == "" and parts[2] == "" then
+            notify(parts[3])
+         else
+            notify(parts[1] .. " - " .. parts[3])
+         end
+      end
+   end)
+
+   return process, pid
 end
 
 return M
